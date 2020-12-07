@@ -1,0 +1,160 @@
+version: '3'
+services:
+    database:
+        image: mariadb/server:latest
+        container_name: ${APP_NAME}_mysql
+        restart: always
+        environment:
+            MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+            MYSQL_DATABASE: ${MYSQL_DATABASE}
+            MYSQL_USER: ${MYSQL_USER}
+            MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+        ports:
+            - ${PORT_DATABASE}:3306
+        volumes:
+            - "./data/db/mysql:/var/lib/mysql"
+            - "./etc/mysql:/etc/mysql/conf.d"
+            # - "./u8195785_pos.sql:/docker-entrypoint-initdb.d/dump.sql"
+        networks:
+            - app-network
+    # mailcatcher:
+    #     image: schickling/mailcatcher
+    #     container_name: ${APP_NAME}_mailcatcher
+    #     ports:
+    #         - ${PORT_MAILCATCHER}:1080
+    #     networks:
+    #         - app-network
+    redis:
+        container_name: ${APP_NAME}_redis
+        image: redis
+        ports:
+            - "${PORT_REDIS}:6379"
+        volumes:
+            - "./data/redis:/data"
+        restart: always
+        networks:
+          - app-network
+    myadmin:
+        image: phpmyadmin/phpmyadmin
+        container_name: ${APP_NAME}_phpmyadmin
+        ports:
+            - ${PORT_PHPMYADMIN}:80
+        restart: always
+        links:
+            - database:db
+        depends_on:
+            - database
+        networks:
+            - app-network
+    php:
+        build:
+            context: ./etc/php
+            args:
+            - INSTALL_NODE=${INSTALL_NODE}
+            - INSTALL_GULP=${INSTALL_GULP}
+            - INSTALL_BOWER=${INSTALL_BOWER}
+            - INSTALL_POSTGRESQL=${INSTALL_POSTGRESQL}
+            - INSTALL_MYSQL=${INSTALL_MYSQL}
+            - INSTALL_GD=${INSTALL_GD}
+            - ADD_ALIASES=${ADD_ALIASES}
+            - INSTALL_XDEBUG=${INSTALL_XDEBUG}
+        container_name: ${APP_NAME}_php
+        entrypoint: sh /bin/entrypoint.sh php-fpm
+        links:
+            - database:mysqldb
+        restart: always
+        volumes:
+            - "./etc/php/php.ini:/usr/local/etc/php/conf.d/php.ini"
+            - ${APP_PATH}:/var/www/html
+            - './etc/log/nginx:/var/log/nginx'
+            - ./etc/php/entrypoint.sh:/bin/entrypoint.sh
+        networks:
+            - app-network
+
+    iredmail:
+        image: lejmr/iredmail:mysql-latest
+        # build: ./etc/iredmail
+        container_name: ${APP_NAME}_iredmail
+        hostname: ${MAIL_HOST}
+        domainname: ${APP_HOST}
+        ports:
+            - ${PORT_HTTP_MAIL}:80
+            - ${PORT_HTTPS_MAIL}:443
+            - ${PORT_25}:25
+            - 587:587
+            - 110:110
+            - 143:143
+            - 993:993
+            - 995:995
+            - 10026:10026
+        restart: always
+        environment:
+            - MYSQL_ROOT_PASSWORD=${MAIL_MYSQL_ROOT_PASSWORD}
+            - TZ=Europe/Belgrade
+            - POSTMASTER_PASSWORD={PLAIN}${MAIL_POSTMASTER_PWD}
+            - IREDAPD_PLUGINS=['reject_null_sender', 'reject_sender_login_mismatch', 'greylisting', 'throttle', 'amavisd_wblist', 'sql_alias_access_policy']
+        # entrypoint: sh /bin/entrypoint.sh
+        # command: bash -c "mv /etc/pki/tls/certs/iRedMail.crt{,.bak} && mv /etc/pki/tls/private/iRedMail.key{,.bak} && ln -s /etc/ssl/certificates.crt /etc/pki/tls/certs/iRedMail.crt && ln -s /etc/ssl/private.key /etc/pki/tls/certs/iRedMail.key"
+        volumes:
+            - "./iredmail/mysql:/var/lib/mysql"
+            - "./iredmail/vmail:/var/vmail"
+            - "./iredmail/clamav:/var/lib/clamav"
+            - "./iredmail/log/maillog:/var/log/maillog"
+            - "./iredmail/log/mail.log:/var/log/mail.log"
+            - "./iredmail/log/letsencrypt:/var/log/letsencrypt"
+            # - "./etc/iredmail/cert_new.sh:/etc/ssl/cert_new.sh"
+            # - "./etc/ssl:/etc/ssl"
+            - "./etc/ssl/certs:/etc/ssl/certs"
+            - "./etc/ssl/private:/etc/ssl/private"
+            # - "./certbot/conf/live/${MAIL_HOST}.${APP_HOST}/fullchain.pem:/etc/ssl/certs/iRedMail.crt"
+            # - "./certbot/conf/live/${MAIL_HOST}.${APP_HOST}/privkey.pem:/etc/ssl/private/iRedMail.key"
+        networks:
+            - app-network
+    # certbot:
+    #     image: certbot/certbot:latest
+    #     container_name: ${APP_NAME}_certbot
+    #     command: certonly --webroot --webroot-path=/var/www/certbot --email your-email --agree-tos --no-eff-email -d mail.your-domain.com,imap.your-domain.com,pop3.your-domain.com,smtp.your-domain.com
+    #     volumes:
+    #         - ./certbot/conf:/etc/letsencrypt
+    #         - ./certbot/logs:/var/log/letsencrypt
+    #         - ./certbot/data:/var/www/certbot
+    #     networks:
+    #         - app-network
+
+    web:
+        build: ./etc/nginx
+        container_name: ${APP_NAME}_nginx
+        domainname: ${APP_HOST}
+        ports:
+            - ${PORT_HTTP}:80
+            - ${PORT_HTTPS}:443
+        restart: always
+        volumes:
+            - "./etc/nginx/nginx.conf:/etc/nginx/nginx.conf"
+            - "./etc/nginx/app.conf:/etc/nginx/sites-available/application.conf"
+            - "./etc/nginx/app.conf:/etc/nginx/sites-enabled/application"
+            - "./etc/nginx/mail.conf:/etc/nginx/mail.conf"
+            - "./etc/nginx/certbot.conf:/etc/nginx/sites-available/certbot.conf"
+            - "./etc/nginx/certbot.conf:/etc/nginx/sites-enabled/certbot"
+            - "./etc/ssl/your-domain_com_chain.crt:/etc/ssl/certificates.crt"
+            - "./etc/ssl/your-domain_com.key:/etc/ssl/private.key"
+            - "./etc/ssl/certs:/etc/ssl/certs"
+            - "./etc/ssl/private:/etc/ssl/private"
+            # - "./certbot/conf/live/${MAIL_HOST}.${APP_HOST}/fullchain.pem:/etc/ssl/certs/iRedMail.crt"
+            # - "./certbot/conf/live/${MAIL_HOST}.${APP_HOST}/privkey.pem:/etc/ssl/private/iRedMail.key"
+            # - "./etc/ssl:/etc/ssl"
+            - "./etc/log/nginx:/var/log/nginx"
+            - ${APP_PATH}:/var/www/html
+            - ./certbot/conf:/etc/nginx/ssl
+            - ./certbot/data:/var/www/certbot
+        depends_on:
+            - php
+            - database
+            - iredmail
+        networks:
+            - app-network
+
+#Docker Networks
+networks:
+  app-network:
+    driver: bridge
